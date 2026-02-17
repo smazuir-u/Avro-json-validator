@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Validateur Avro</title>
+    <style>
+        body { font-family: system-ui, sans-serif; margin: 25px; background: #f1f5f9; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .editor { display: flex; background: #fff; border-radius: 8px; overflow: hidden; border: 1px solid #cbd5e1; height: 500px; }
+        .gutter { width: 56px; background: #f8fafc; padding: 12px 8px; border-right: 1px solid #e2e8f0; box-sizing: border-box; color: #64748b; font-family: monospace; font-size: 12px; line-height: 20px; overflow: auto; text-align: right; }
+        .gutter .line { display: block; padding-right: 6px; height: 20px; }
+        .gutter .line.marker { color: #dc2626; font-weight: 700; }
+    textarea { width: 100%; height: 100%; font-family: monospace; padding: 12px; border: none; box-sizing: border-box; resize: none; outline: none; overflow: auto; }
+        .editor.dragover { box-shadow: 0 0 0 3px rgba(37,99,235,0.12) inset; }
+        .actions { margin: 20px 0; text-align: center; }
+        button { background: #2563eb; color: white; border: none; padding: 10px 18px; border-radius: 6px; cursor: pointer; font-weight: bold; }
+        #res { padding: 20px; border-radius: 8px; display: none; white-space: pre-wrap; line-height: 1.5; margin-top: 12px; }
+        .error { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+        .success { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
+        .small { font-size: 0.9rem; color:#475569 }
+    </style>
+</head>
+<body>
+
+    <div style="max-width: 1200px; margin: 0 auto;">
+        <h2 style="text-align: center;">🛠 Validateur Avro</h2>
+        
+        <div class="grid">
+            <div>
+                <h3>1. Schéma (.avsc)</h3>
+                <div class="editor" id="schemaEditor" data-role="schema">
+                    <div class="gutter" id="schemaGutter"></div>
+                    <textarea id="s" spellcheck="false" placeholder="Collez ou chargez le schéma .avsc ici..."></textarea>
+                </div>
+                <div style="margin-top:8px; display:flex; gap:8px;">
+                    <button id="loadSchemaBtn">Charger le schéma</button>
+                    <input id="schemaFile" type="file" accept=".avsc,.json" style="display:none">
+                </div>
+            </div>
+            <div>
+                <h3>2. Données JSON</h3>
+                <div class="editor" id="jsonEditor" data-role="json">
+                    <div class="gutter" id="jsonGutter"></div>
+                    <textarea id="j" spellcheck="false" placeholder="Collez ou chargez le JSON ici..."></textarea>
+                </div>
+                <div style="margin-top:8px; display:flex; gap:8px;">
+                    <button id="loadJsonBtn">Charger le JSON</button>
+                    <input id="jsonFile" type="file" accept=".json,.txt" style="display:none">
+                </div>
+            </div>
+        </div>
+
+        <div class="actions">
+            <button id="btn">Vérifier</button>
+            <label style="margin-left:12px; font-size:0.9rem; color:#334155;">Autosave local activé</label>
+        </div>
+
+        <div id="res"></div>
+    </div>
+
+<script type="module">
+    import avro from 'https://esm.sh/avsc@5.7.9';
+
+    // Elements
+    const sEl = document.getElementById('s');
+    const jEl = document.getElementById('j');
+    const resEl = document.getElementById('res');
+    const schemaGutter = document.getElementById('schemaGutter');
+    const jsonGutter = document.getElementById('jsonGutter');
+    const schemaEditor = document.getElementById('schemaEditor');
+    const jsonEditor = document.getElementById('jsonEditor');
+
+    const LS_SCHEMA = 'avro_schema';
+    const LS_JSON = 'avro_json';
+
+    // Helpers
+    function escapeRegExp(s) {
+        return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    function updateGutter(textarea, gutter, errorLines = new Set()) {
+        const lines = textarea.value.split('\n').length;
+        let out = '';
+        for (let i = 1; i <= lines; i++) {
+            const cls = errorLines.has(i) ? 'line marker' : 'line';
+            out += `<span class="${cls}">${i}</span>`;
+        }
+        gutter.innerHTML = out;
+        // sync scroll
+        gutter.scrollTop = textarea.scrollTop;
+    }
+
+    function initEditorSync(textarea, gutter, container) {
+        textarea.addEventListener('input', () => {
+            updateGutter(textarea, gutter);
+            // autosave
+            if (textarea === sEl) localStorage.setItem(LS_SCHEMA, textarea.value);
+            if (textarea === jEl) localStorage.setItem(LS_JSON, textarea.value);
+        });
+        textarea.addEventListener('scroll', () => {
+            gutter.scrollTop = textarea.scrollTop;
+        });
+
+        // drag & drop support
+        ['dragenter', 'dragover'].forEach(ev => {
+            container.addEventListener(ev, (e) => { e.preventDefault(); container.classList.add('dragover'); });
+        });
+        ['dragleave', 'dragend', 'drop'].forEach(ev => {
+            container.addEventListener(ev, (e) => { e.preventDefault(); container.classList.remove('dragover'); });
+        });
+        container.addEventListener('drop', (e) => {
+            e.preventDefault();
+            const f = e.dataTransfer.files && e.dataTransfer.files[0];
+            if (!f) return;
+            const reader = new FileReader();
+            reader.onload = () => {
+                textarea.value = reader.result;
+                updateGutter(textarea, gutter);
+                if (textarea === sEl) localStorage.setItem(LS_SCHEMA, textarea.value);
+                if (textarea === jEl) localStorage.setItem(LS_JSON, textarea.value);
+            };
+            reader.readAsText(f, 'utf-8');
+        });
+    }
+
+    // File load buttons
+    document.getElementById('loadSchemaBtn').addEventListener('click', () => document.getElementById('schemaFile').click());
+    document.getElementById('loadJsonBtn').addEventListener('click', () => document.getElementById('jsonFile').click());
+
+    document.getElementById('schemaFile').addEventListener('change', (e) => {
+        const f = e.target.files[0];
+        if (!f) return;
+        const r = new FileReader();
+        r.onload = () => { sEl.value = r.result; updateGutter(sEl, schemaGutter); localStorage.setItem(LS_SCHEMA, sEl.value); };
+        r.readAsText(f, 'utf-8');
+        e.target.value = '';
+    });
+
+    document.getElementById('jsonFile').addEventListener('change', (e) => {
+        const f = e.target.files[0];
+        if (!f) return;
+        const r = new FileReader();
+        r.onload = () => { jEl.value = r.result; updateGutter(jEl, jsonGutter); localStorage.setItem(LS_JSON, jEl.value); };
+        r.readAsText(f, 'utf-8');
+        e.target.value = '';
+    });
+
+    // (download/save buttons removed per request)
+
+    // Initialize editors
+    initEditorSync(sEl, schemaGutter, schemaEditor);
+    initEditorSync(jEl, jsonGutter, jsonEditor);
+
+    // Restore from localStorage
+    window.addEventListener('DOMContentLoaded', () => {
+        const savedSchema = localStorage.getItem(LS_SCHEMA);
+        const savedJson = localStorage.getItem(LS_JSON);
+        if (savedSchema) { sEl.value = savedSchema; }
+        if (savedJson) { jEl.value = savedJson; }
+        updateGutter(sEl, schemaGutter);
+        updateGutter(jEl, jsonGutter);
+    });
+
+    // Compute error lines heuristically from pretty-printed JSON and error path
+    function computeErrorLines(data, errors) {
+        const lines = new Set();
+        let pretty = '';
+        try { pretty = JSON.stringify(data, null, 2); } catch (e) { return lines; }
+
+        errors.forEach(err => {
+            const path = Array.isArray(err.path) ? err.path : (String(err.path).split('.') || []);
+            if (!path.length) return;
+            const last = path[path.length - 1];
+
+            // Try to find the property name in the pretty JSON
+            if (typeof last === 'string') {
+                const regex = new RegExp('^\\s*"' + escapeRegExp(String(last)) + '"\\s*:', 'm');
+                const m = regex.exec(pretty);
+                if (m && typeof m.index === 'number') {
+                    const ln = pretty.slice(0, m.index).split('\n').length;
+                    lines.add(ln + 1 - 1 + 1); // ensure integer (no-op, kept for clarity)
+                    return;
+                }
+            }
+
+            // Fallback: search for the stringified value
+            try {
+                const valText = JSON.stringify(err.value);
+                const idx = pretty.indexOf(valText);
+                if (idx !== -1) {
+                    const ln = pretty.slice(0, idx).split('\n').length;
+                    lines.add(ln + 1 - 1 + 1);
+                    return;
+                }
+            } catch (e) { /* ignore */ }
+
+            // As last resort, if path contains a numeric index, try to find bracket
+            // or search by key name without quotes
+            if (typeof last !== 'undefined') {
+                const idx2 = pretty.indexOf(String(last));
+                if (idx2 !== -1) {
+                    const ln = pretty.slice(0, idx2).split('\n').length;
+                    lines.add(ln + 1 - 1 + 1);
+                }
+            }
+        });
+
+        return lines;
+    }
+
+    // Main validation
+    document.getElementById('btn').addEventListener('click', () => {
+        resEl.style.display = 'block';
+        resEl.className = '';
+        resEl.textContent = '';
+
+        const schemaText = sEl.value;
+        const dataText = jEl.value;
+
+        try {
+            const safeDataText = dataText.replace(/:\s*(-?\d{12,})(\s*[,}\n])/g, ':"$1"$2');
+            const data = JSON.parse(safeDataText);
+
+            const type = avro.parse(JSON.parse(schemaText), {
+                typeHook: (schema, opts) => {
+                    if (schema === 'long' || (schema && schema.type === 'long')) {
+                        return new class PermissiveLongType extends avro.types.LongType {
+                            _check(val, see, errorHook) {
+                                if (typeof val === 'string' && /^-?\d+$/.test(val)) return true;
+                                if (typeof val === 'bigint') return true;
+                                if (typeof val === 'number' && Number.isInteger(val)) return true;
+                                if (errorHook) errorHook(val, this);
+                                return false;
+                            }
+                        }(schema, opts);
+                    }
+                    return null;
+                }
+            });
+
+            const errors = [];
+            const isValid = type.isValid(data, {
+                errorHook: (path, value, type) => {
+                    // Keep both machine-friendly and human-friendly info
+                    errors.push({ path: path || [], value, typeName: type && type.typeName ? type.typeName : String(type) });
+                }
+            });
+
+            if (isValid) {
+                resEl.className = 'success';
+                resEl.innerHTML = "✅ <b>VALIDE !</b>\n\nLe JSON est conforme 🎉";
+                updateGutter(jEl, jsonGutter, new Set());
+            } else {
+                const human = errors.map(e => `${e.path.join('.')} (Attendu: ${e.typeName}, Reçu: ${typeof e.value} \"${e.value}\")`);
+                resEl.className = 'error';
+                resEl.innerHTML = `❌ <b>ERREUR DE CONFORMITÉ</b>\n\nChamps invalides :\n- ${human.join('\n- ')}`;
+
+                // Compute line markers and update gutter
+                const errorLines = computeErrorLines(data, errors);
+                updateGutter(jEl, jsonGutter, errorLines);
+            }
+
+        } catch (e) {
+            resEl.className = 'error';
+            resEl.innerHTML = "⚠️ <b>ERREUR TECHNIQUE</b>\n" + e.message;
+            // Attempt to mark a line for JSON parse errors (best-effort)
+            try {
+                // Look for position info like 'position 123' in message
+                const m = /position\s*(\d+)/i.exec(e.message);
+                if (m) {
+                    const pos = parseInt(m[1], 10);
+                    const text = jEl.value;
+                    const ln = text.slice(0, pos).split('\n').length;
+                    updateGutter(jEl, jsonGutter, new Set([ln]));
+                }
+            } catch (err) { /* ignore */ }
+        }
+    });
+
+</script>
+</body>
+</html>
