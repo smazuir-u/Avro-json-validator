@@ -7,10 +7,13 @@
         body { font-family: system-ui, sans-serif; margin: 25px; background: #f1f5f9; }
         .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
     .editor { display: flex; background: #fff; border-radius: 8px; overflow: hidden; border: 1px solid #cbd5e1; height: 500px; }
-        .gutter { width: 56px; background: #f8fafc; padding: 12px 8px; border-right: 1px solid #e2e8f0; box-sizing: border-box; color: #64748b; font-family: monospace; font-size: 12px; line-height: 20px; overflow: auto; text-align: right; }
-        .gutter .line { display: block; padding-right: 6px; height: 20px; }
-        .gutter .line.marker { color: #dc2626; font-weight: 700; }
-    textarea { width: 100%; height: 100%; font-family: monospace; padding: 12px; border: none; box-sizing: border-box; resize: none; outline: none; overflow: auto; }
+    .gutter { width: 72px; background: #f8fafc; padding: 12px 8px; border-right: 1px solid #e2e8f0; box-sizing: border-box; color: #64748b; font-family: monospace; font-size: 12px; line-height: 20px; overflow: hidden; text-align: right; }
+    .gutterInner { position: relative; }
+    .gutter .line { display: flex; justify-content: flex-end; align-items: center; gap:6px; height: 20px; padding-right: 6px; }
+    .gutter .line .num { color: #64748b; }
+    .gutter .line.marker .num { font-weight: 700; color: #fff; background: #dc2626; padding: 2px 6px; border-radius: 4px; }
+    .gutter .line.marker .mark { color: #dc2626; font-weight: 900; margin-left:4px; }
+    textarea { width: 100%; height: 100%; font-family: monospace; font-size: 12px; line-height: 20px; padding: 12px; border: none; box-sizing: border-box; resize: none; outline: none; overflow: auto; overflow-x: auto; white-space: pre; }
         .editor.dragover { box-shadow: 0 0 0 3px rgba(37,99,235,0.12) inset; }
         .actions { margin: 20px 0; text-align: center; }
         button { background: #2563eb; color: white; border: none; padding: 10px 18px; border-radius: 6px; cursor: pointer; font-weight: bold; }
@@ -30,7 +33,7 @@
                 <h3>1. Schéma (.avsc)</h3>
                 <div class="editor" id="schemaEditor" data-role="schema">
                     <div class="gutter" id="schemaGutter"></div>
-                    <textarea id="s" spellcheck="false" placeholder="Collez ou chargez le schéma .avsc ici..."></textarea>
+                    <textarea id="s" wrap="off" spellcheck="false" placeholder="Collez ou chargez le schéma .avsc ici..."></textarea>
                 </div>
                 <div style="margin-top:8px; display:flex; gap:8px;">
                     <button id="loadSchemaBtn">Charger le schéma</button>
@@ -41,7 +44,7 @@
                 <h3>2. Données JSON</h3>
                 <div class="editor" id="jsonEditor" data-role="json">
                     <div class="gutter" id="jsonGutter"></div>
-                    <textarea id="j" spellcheck="false" placeholder="Collez ou chargez le JSON ici..."></textarea>
+                    <textarea id="j" wrap="off" spellcheck="false" placeholder="Collez ou chargez le JSON ici..."></textarea>
                 </div>
                 <div style="margin-top:8px; display:flex; gap:8px;">
                     <button id="loadJsonBtn">Charger le JSON</button>
@@ -52,7 +55,6 @@
 
         <div class="actions">
             <button id="btn">Vérifier</button>
-            <label style="margin-left:12px; font-size:0.9rem; color:#334155;">Autosave local activé</label>
         </div>
 
         <div id="res"></div>
@@ -80,14 +82,18 @@
 
     function updateGutter(textarea, gutter, errorLines = new Set()) {
         const lines = textarea.value.split('\n').length;
-        let out = '';
+        let out = '<div class="gutterInner">';
         for (let i = 1; i <= lines; i++) {
-            const cls = errorLines.has(i) ? 'line marker' : 'line';
-            out += `<span class="${cls}">${i}</span>`;
+            const isErr = errorLines.has(i);
+            const cls = isErr ? 'line marker' : 'line';
+            const mark = isErr ? '<span class="mark">❌</span>' : '';
+            out += `<span class="${cls}"><span class="num">${i}</span>${mark}</span>`;
         }
+        out += '</div>';
         gutter.innerHTML = out;
-        // sync scroll
-        gutter.scrollTop = textarea.scrollTop;
+        // translate inner gutter to match textarea scroll (pixel-accurate)
+        const inner = gutter.querySelector('.gutterInner');
+        if (inner) inner.style.transform = `translateY(-${textarea.scrollTop}px)`;
     }
 
     function initEditorSync(textarea, gutter, container) {
@@ -98,7 +104,9 @@
             if (textarea === jEl) localStorage.setItem(LS_JSON, textarea.value);
         });
         textarea.addEventListener('scroll', () => {
-            gutter.scrollTop = textarea.scrollTop;
+            // move inner gutter content instead of scrolling the gutter itself
+            const inner = gutter.querySelector('.gutterInner');
+            if (inner) inner.style.transform = `translateY(-${textarea.scrollTop}px)`;
         });
 
         // drag & drop support
@@ -161,47 +169,71 @@
         updateGutter(jEl, jsonGutter);
     });
 
-    // Compute error lines heuristically from pretty-printed JSON and error path
+    // Compute error lines by searching the raw textarea text for the path keys and their ancestors.
+    // This looks for occurrences of the last key and validates that parent keys appear before it.
     function computeErrorLines(data, errors) {
         const lines = new Set();
-        let pretty = '';
-        try { pretty = JSON.stringify(data, null, 2); } catch (e) { return lines; }
+        const text = jEl.value || '';
+
+        function allOccurrences(hay, needle) {
+            const res = [];
+            let idx = 0;
+            while ((idx = hay.indexOf(needle, idx)) !== -1) {
+                res.push(idx);
+                idx = idx + 1;
+            }
+            return res;
+        }
 
         errors.forEach(err => {
             const path = Array.isArray(err.path) ? err.path : (String(err.path).split('.') || []);
             if (!path.length) return;
-            const last = path[path.length - 1];
+            const last = String(path[path.length - 1]);
 
-            // Try to find the property name in the pretty JSON
-            if (typeof last === 'string') {
-                const regex = new RegExp('^\\s*"' + escapeRegExp(String(last)) + '"\\s*:', 'm');
-                const m = regex.exec(pretty);
-                if (m && typeof m.index === 'number') {
-                    const ln = pretty.slice(0, m.index).split('\n').length;
-                    lines.add(ln + 1 - 1 + 1); // ensure integer (no-op, kept for clarity)
-                    return;
+            // search for quoted key occurrences in the raw text
+            const keyToken = `"${last}"`;
+            const occ = allOccurrences(text, keyToken);
+            let chosenIdx = -1;
+
+            for (const idx of occ) {
+                // validate ancestors exist before this index (nearest occurrences before idx)
+                let ok = true;
+                for (let p = path.length - 2; p >= 0; p--) {
+                    const anc = String(path[p]);
+                    const ancToken = `"${anc}"`;
+                    const ancPos = text.lastIndexOf(ancToken, idx - 1);
+                    if (ancPos === -1) { ok = false; break; }
                 }
+                if (ok) { chosenIdx = idx; break; }
             }
 
-            // Fallback: search for the stringified value
+            if (chosenIdx === -1 && occ.length) {
+                // fallback: pick the last occurrence
+                chosenIdx = occ[occ.length - 1];
+            }
+
+            if (chosenIdx !== -1) {
+                const ln = text.slice(0, chosenIdx).split('\n').length;
+                lines.add(ln);
+                return;
+            }
+
+            // fallback: try to locate by stringified value
             try {
                 const valText = JSON.stringify(err.value);
-                const idx = pretty.indexOf(valText);
-                if (idx !== -1) {
-                    const ln = pretty.slice(0, idx).split('\n').length;
-                    lines.add(ln + 1 - 1 + 1);
+                const vi = text.indexOf(valText);
+                if (vi !== -1) {
+                    const ln = text.slice(0, vi).split('\n').length;
+                    lines.add(ln);
                     return;
                 }
             } catch (e) { /* ignore */ }
 
-            // As last resort, if path contains a numeric index, try to find bracket
-            // or search by key name without quotes
-            if (typeof last !== 'undefined') {
-                const idx2 = pretty.indexOf(String(last));
-                if (idx2 !== -1) {
-                    const ln = pretty.slice(0, idx2).split('\n').length;
-                    lines.add(ln + 1 - 1 + 1);
-                }
+            // final fallback: search plain last token
+            const idx2 = text.indexOf(last);
+            if (idx2 !== -1) {
+                const ln = text.slice(0, idx2).split('\n').length;
+                lines.add(ln);
             }
         });
 
