@@ -211,50 +211,108 @@
         const lines = new Set();
         const text = jEl.value || '';
 
-        function allOccurrences(hay, needle) {
-            const res = [];
-            let idx = 0;
-            while ((idx = hay.indexOf(needle, idx)) !== -1) {
-                res.push(idx);
-                idx = idx + 1;
+        function nextNonWhite(idx) {
+            while (idx < text.length && /\s/.test(text[idx])) idx++;
+            return idx;
+        }
+
+        function findColonAfter(pos) {
+            let i = pos;
+            while (i < text.length) {
+                if (text[i] === ':') return i;
+                i++;
             }
-            return res;
+            return -1;
+        }
+
+        // find start index of nth array element given arrayStart (position of '[')
+        function findArrayElementStart(arrayStart, elementIndex) {
+            let i = arrayStart + 1;
+            let depth = 0; // depth for nested structures inside elements
+            let currentElement = 0;
+            // skip initial whitespace
+            while (i < text.length) {
+                // skip whitespace
+                while (i < text.length && /\s/.test(text[i])) i++;
+                if (i >= text.length) break;
+                if (text[i] === ']') return -1; // empty or ended
+                // start of element
+                if (currentElement === elementIndex) return i;
+                // otherwise skip this element entirely by scanning until comma at depth 0 or closing ]
+                depth = 0;
+                while (i < text.length) {
+                    const ch = text[i];
+                    if (ch === '"') {
+                        // skip string literal
+                        i++;
+                        while (i < text.length) {
+                            if (text[i] === '\\') { i += 2; continue; }
+                            if (text[i] === '"') { i++; break; }
+                            i++;
+                        }
+                        continue;
+                    } else if (ch === '{' || ch === '[') {
+                        depth++;
+                    } else if (ch === '}' || ch === ']') {
+                        if (depth === 0) break;
+                        depth--;
+                    } else if (ch === ',' && depth === 0) {
+                        i++; break; // next element
+                    }
+                    i++;
+                }
+                currentElement++;
+            }
+            return -1;
+        }
+
+        // Recursive/backtracking attempt: try to match path segments starting from searchPos
+        function matchFromIndex(pathArr, idx, searchPos) {
+            if (idx >= pathArr.length) return searchPos;
+            const seg = String(pathArr[idx]);
+            if (/^\d+$/.test(seg)) {
+                // numeric index: find array start at or after searchPos
+                const bracket = text.indexOf('[', searchPos);
+                if (bracket === -1) return -1;
+                const elemStart = findArrayElementStart(bracket, parseInt(seg, 10));
+                if (elemStart === -1) return -1;
+                return matchFromIndex(pathArr, idx + 1, elemStart);
+            } else {
+                const keyToken = `"${seg}"`;
+                let found = text.indexOf(keyToken, searchPos);
+                while (found !== -1) {
+                    const colon = findColonAfter(found + keyToken.length);
+                    if (colon === -1) { found = text.indexOf(keyToken, found + 1); continue; }
+                    const vstart = nextNonWhite(colon + 1);
+                    const res = matchFromIndex(pathArr, idx + 1, vstart);
+                    if (res !== -1) return res;
+                    found = text.indexOf(keyToken, found + 1);
+                }
+                return -1;
+            }
         }
 
         errors.forEach(err => {
             const path = Array.isArray(err.path) ? err.path : (String(err.path).split('.') || []);
             if (!path.length) return;
-            const last = String(path[path.length - 1]);
-
-            // search for quoted key occurrences in the raw text
-            const keyToken = `"${last}"`;
-            const occ = allOccurrences(text, keyToken);
-            let chosenIdx = -1;
-
-            for (const idx of occ) {
-                // validate ancestors exist before this index (nearest occurrences before idx)
-                let ok = true;
-                for (let p = path.length - 2; p >= 0; p--) {
-                    const anc = String(path[p]);
-                    const ancToken = `"${anc}"`;
-                    const ancPos = text.lastIndexOf(ancToken, idx - 1);
-                    if (ancPos === -1) { ok = false; break; }
-                }
-                if (ok) { chosenIdx = idx; break; }
-            }
-
-            if (chosenIdx === -1 && occ.length) {
-                // fallback: pick the last occurrence
-                chosenIdx = occ[occ.length - 1];
-            }
-
-            if (chosenIdx !== -1) {
-                const ln = text.slice(0, chosenIdx).split('\n').length;
+            // try to match from start of file; matchFromIndex returns position where last element/value starts
+            const pos = matchFromIndex(path, 0, 0);
+            if (pos !== -1) {
+                const ln = text.slice(0, pos).split('\n').length;
                 lines.add(ln);
                 return;
             }
 
-            // fallback: try to locate by stringified value
+            // fallback: previous strategies (by key or value)
+            const last = String(path[path.length - 1]);
+            const keyToken = `"${last}"`;
+            const lastIdx = text.lastIndexOf(keyToken);
+            if (lastIdx !== -1) {
+                const ln = text.slice(0, lastIdx).split('\n').length;
+                lines.add(ln);
+                return;
+            }
+
             try {
                 const valText = JSON.stringify(err.value);
                 const vi = text.indexOf(valText);
@@ -264,13 +322,6 @@
                     return;
                 }
             } catch (e) { /* ignore */ }
-
-            // final fallback: search plain last token
-            const idx2 = text.indexOf(last);
-            if (idx2 !== -1) {
-                const ln = text.slice(0, idx2).split('\n').length;
-                lines.add(ln);
-            }
         });
 
         return lines;
