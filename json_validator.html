@@ -35,8 +35,9 @@
                     <div class="gutter" id="schemaGutter"></div>
                     <textarea id="s" wrap="off" spellcheck="false" placeholder="Collez ou chargez le schéma .avsc ici..."></textarea>
                 </div>
-                <div style="margin-top:8px; display:flex; gap:8px;">
+                <div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
                     <button id="loadSchemaBtn">Charger le schéma</button>
+                    <button id="formatSchemaBtn" title="Formatter le schéma">{...}</button>
                     <input id="schemaFile" type="file" accept=".avsc,.json" style="display:none">
                 </div>
             </div>
@@ -46,8 +47,9 @@
                     <div class="gutter" id="jsonGutter"></div>
                     <textarea id="j" wrap="off" spellcheck="false" placeholder="Collez ou chargez le JSON ici..."></textarea>
                 </div>
-                <div style="margin-top:8px; display:flex; gap:8px;">
+                <div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
                     <button id="loadJsonBtn">Charger le JSON</button>
+                    <button id="formatJsonBtn" title="Formatter le JSON">{...}</button>
                     <input id="jsonFile" type="file" accept=".json,.txt" style="display:none">
                 </div>
             </div>
@@ -134,6 +136,40 @@
     // File load buttons
     document.getElementById('loadSchemaBtn').addEventListener('click', () => document.getElementById('schemaFile').click());
     document.getElementById('loadJsonBtn').addEventListener('click', () => document.getElementById('jsonFile').click());
+
+    // Format buttons
+    document.getElementById('formatSchemaBtn').addEventListener('click', () => {
+        resEl.style.display = 'block'; resEl.className = '';
+        try {
+            if (!sEl.value.trim()) return;
+            const obj = JSON.parse(sEl.value);
+            sEl.value = JSON.stringify(obj, null, 2);
+            updateGutter(sEl, schemaGutter);
+            localStorage.setItem(LS_SCHEMA, sEl.value);
+            resEl.className = 'success';
+            resEl.textContent = '✅ Schéma formaté.';
+        } catch (err) {
+            resEl.className = 'error';
+            resEl.textContent = '⚠️ Erreur lors du formatage du schéma: ' + err.message;
+        }
+    });
+
+    document.getElementById('formatJsonBtn').addEventListener('click', () => {
+        resEl.style.display = 'block'; resEl.className = '';
+        try {
+            if (!jEl.value.trim()) return;
+            // we preserve the safe-number regex only for validation; here try to parse raw JSON
+            const obj = JSON.parse(jEl.value);
+            jEl.value = JSON.stringify(obj, null, 2);
+            updateGutter(jEl, jsonGutter);
+            localStorage.setItem(LS_JSON, jEl.value);
+            resEl.className = 'success';
+            resEl.textContent = '✅ JSON formaté.';
+        } catch (err) {
+            resEl.className = 'error';
+            resEl.textContent = '⚠️ Erreur lors du formatage du JSON: ' + err.message;
+        }
+    });
 
     document.getElementById('schemaFile').addEventListener('change', (e) => {
         const f = e.target.files[0];
